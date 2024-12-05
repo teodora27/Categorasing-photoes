@@ -1,0 +1,112 @@
+Titlu: Predictor de categorii oarecare de imagini utlizand Bayes si feature-uri generate de dinov2
+Membrii: Teodora Laura Cojocaru 252, Mihnea Andreescu 251
+Date: Datele au fost luate manual de catre noi cautand pe internet poze cu imagini 
+Structura datelor: Datele se afla in folderul data sub denumiri precum (beach7.jpg) in formatul (categorie[id_unic_pt_poza_respectiva_din_categorie].extensie)
+
+Ce poate mai exact sa faca modelul nostru?
+Puteti alege orice categorie doriti. Si atunci cand spun orice, puteti literalmente orice categorie
+pentru ca feature-urile extrase de dinov2 sunt foarte foarte bune.
+Dupa ce alegeti si niste poze din categoria respectiva, puteti sa ii dati modelului poze noi si sa il rugati sa prezica
+in care din categoriile definite de dvs se incadreaza poza.
+
+Frumusetea acestui proiect este ca atunci cand doriti sa adaugati o categorie noua, tot ceea ce trebuie sa faceti este sa adaugati cateva poze in folder-ul data 
+si programul nostru va face magia pentru dvs.
+
+Cum functioneaza modelul nostru matematic?
+
+Ei bine, dinov2 transforma o imagine oarecare intr-un tensor de dimensiune 1024 cu feature-uri.
+Si imagini din aceeasi categorie vor avea feature-uri cat de cat asemanatoare.
+
+Permiteti-mi sa fac o paranteza mai lunga in care sa explic o solutie care NU utilizeaza un clasificator Bayes, 
+dar UTILIZEAZA formula de la bayes pentru a demonstra PUTEREA feature-urilor generate de dinov2: functia test(dim_base).
+va alege dim_base elemente din fiecare categorie (sau mai putine daca nu sunt suficiente) si va prezice pentru fiecare imagine 
+in ce categorie se afla, verificand fata de ce categorie este mai "aproape", folosind functia noastra compute_distance.
+Solutia aceasta are o acuratete de peste 98% deci acum suntem siguri ca exista o corelatie intre feature-uri si categoria din care se afla.
+
+Acum sa trecem la treaba si sa discutam despre CLASIFICATORUL BAYES pe care l-am construit.
+
+Categoriile sunt clar definite ca fiind (beach, boy, city, girl, mountain, painting, swamp).
+IMPORTANT!!!!!!!!!!!!! Puteti mereu sa mai adaugati dvs categorii si programul va functiona la fel de bine!!! (tot ce trebuie sa faceti este sa adaugati pozele din categoria respectiva in folder-ul data)
+
+Care sunt feature-urile? Ei bine feature-urile sunt booleene adica fiecare poza fie le are fie NU le are.
+Sunt definite sub forma (L, R, Treshold) si se definesc ca fiind [Este adevarat ca in vectorul de feature-uri suma elementelor de pe pozitiile [L, L + 1, ..., R - 1, R] este <= Treshold].
+De ce am ales aceasta formulare specifica? Ei bine, pentru a putea incorpora date despre mai multe feature-uri in acelasi timp, fara a le mentine explicit in memorie.
+Ca sa intelegeti, solutia pe care am mentionata ANTERIOR trebuie sa mentina efectiv toti tensorii datelor de train, dar solutia noastra de acum
+trebuie doar sa mentina cateva intervale de forma (L, R, Treshold). Memoria celei de a doua solutii este mult mai mica (de aprox 80 de ori).
+
+De ce nu mentinem doar perechi de forma (Index, Treshold)? Ei bine, in solutia aceasta propusa de noi, incorporam statistici
+despre mai multe feature-uri in acelasi timp.
+
+Dupa teste, lungi, am ajuns la concluzia ca dimensiunea optima a intervalelor (L, R) este de 10, si probabilitatea ca intervalul sa aiba lungimea i este data de o distributie gausiana.
+pentru ca dorim sa incurajam intervale de lungime medie 5.
+
+Un fapt interesant este faptul ca initial am incercat cu intervale mari, deoarece consideram ca acelea contin mai multe informatii, dar din modul in care a fost antrenata reteaua dinov2
+reiese faptul ca este prea mult "zgomot" pe intervale mai mari si ca urmare statisticile NU sunt concludente.
+
+Pentru a verifica daca suma pe un interval este <= Treshold tot ce trebuie sa facem este sa transformam tensorii in tensori de sume partiale si doar sa calculam diferenta dintre doua elemente.
+
+def has_feature(featureInfo, tensorPartialSum):
+    (st, dr, tresh) = featureInfo
+    return tensorPartialSum[dr] - tensorPartialSum[st - 1] <= tresh
+
+Ceea ce facem noi este sa calculam intervale random de lungime mica si mai apoi sa 
+calculam staistici despre imaginile curente pe care le avem la dispozitie despre ce valoare au ele pe intervalul respectiv
+folosind compute_avg_partialSum(st, dr). Aceasta functie returneaza media sumelor de pe intervalul [st, dr] pentru imaginile pe care le avem in baza noastra de date
+
+for i in range(len(features)):
+    (st, dr) = features[i]
+    avg = compute_avg_partialSum(st, dr)
+    features2.append((st, dr, avg))
+
+de ce nu am calculat mediana? Pentru ca ar fi fost mult mai ineficient sa sortam valorile, mai ales atunci cand avem multe date si poate nu intra toate in memorie in acelasi timp.
+Si am facut teste si a rezultat ca nu este o diferenta semnificativa intre a utiliza media vs mediana.
+Oricum, am dorit media sau mediana pentru ca acele maximizeaza ENTROPIA si ne raspund la cele mai multe intrebari de forma [Este suma <= Avg], avand aproape acelasi numar de poze care au raspunsul DA la aceasta intrebare, si la fel de multe 
+care au raspunsul NU la aceasta intrebare.
+
+acum utilizand Bayes ajungem la P(sunt din categ | am feature-ul f) = (P(am feature-ul f | sunt din categ) * P(sunt din categ))    / P(am feature-ul f)
+avand in vedere ca feature-urile sunt destul de independente, mai ales pentru ca am selectat intervale mici si DIZJUNCTE cu o PROBABILITATE extrem de MARE.
+
+functia care face toata magia este functia predict care prezice din ce categorie stiind ca am raspuns 
+has[i] la intrebarea has_feature(features[i], tensor)
+este cel mai probabil sa fim argmax(pcateg(categ))
+
+def predict(tensor):
+    has = []
+    for i in range(len(features)):
+        has.append(has_feature(features[i], tensor))
+    
+    cn = ""
+    prob = -1
+
+    for categ in data:
+        pcateg = 1
+        for i in range(len(features)):
+            if has[i]: # am raspuns da la intrebare
+                pcateg *= p_categ_stiind_feature[(categ, features[i])]
+            else: # am raspuns NU la intrebare
+                pcateg *= (1 - p_categ_stiind_feature[(categ, features[i])])
+        if pcateg > prob:
+            cn = categ 
+            prob = pcateg
+    return cn 
+
+
+aici verificam acuratetea predictorului nostru:
+
+    good = 0
+    total = 0
+    for categ in data:
+        for tensor in data[categ]:
+            print("predict:", predict(tensor), "| real:", categ)
+            good += (predict(tensor) == categ)
+            total += 1
+    print("pgood =", good / total) # 0.7575757575757576
+
+Atingem o acuratete de 75% pe o intrebare cu 7 categorii, utilizand de 80 de ori mai putina memorie decat solutia costisitoare care mentine datele efectiv.
+
+Ca urmare, concludem prin a afirma ca acest clasificator Bayes este unul foarte reusit si foarte eficient atat din punct de vedere al memoriei (Deoarece contine de 80 de ori mai putina memorie), dar si din
+punct de vedere al vitezei (utilizam sume partiale pentru a raspunde la intrebari, si calculam media, si nu mediana, deoarece am testat in practica si avem rezultate asemanatoare).
+
+Va multumim mult pentru atentie!
+Va incurajam cu mare caldura sa adaugati dvs imagini in folderul data si sa va distrati cu capacitatea modelului nostru.
+
